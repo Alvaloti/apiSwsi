@@ -25,13 +25,35 @@ dotenv.config();
 
 const app = express();
 app.use(express.json());
+
+const allowedOrigins = (
+  process.env.FRONTEND_ORIGINS ||
+  "http://localhost:4200"
+)
+  .split(",")
+  .map(origin => origin.trim());
+
 app.use(
   cors({
-    origin: "http://localhost:4200", // Angular frontend URL
-    credentials: true, // Permitir cookies
+    origin(origin, callback) {
+      if (!origin || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+
+      return callback(new Error("Origen no permitido por CORS"));
+    },
+    credentials: true,
   }),
 );
+
 app.use(cookieParser()); // Middleware para parsear cookies
+
+const cookieOptions = {
+  httpOnly: true,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+  path: "/",
+};
 
 const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/swsi";
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
@@ -238,10 +260,8 @@ app.post("/api/login", async (req, res) => {
     );
 
     res.cookie("token", token, {
-      httpOnly: true,
-      secure: false,
-      sameSite: "lax",
-      maxAge: 3600000,
+      cookieOptions,
+      maxAge: 60 * 60 * 1000,
     }); // 1 hora en milisegundos
     const safeUser = user.toObject();
     delete safeUser.password;
@@ -914,11 +934,13 @@ app.patch("/api/assignments/:id/return", authenticate, adminOnly, async (req, re
 });
 
 app.post("/api/logout", (req, res) => {
-  res.clearCookie('token', { path: '/', httpOnly: true, secure: false, sameSite: 'lax' });
+  res.clearCookie("token", cookieOptions);
     res
       .status(200)
       .json({ status: "success", message: "Cierre de sesión exitoso" });
 });
+
+app.set("trust proxy", 1);
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {

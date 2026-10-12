@@ -1,65 +1,68 @@
 import mongoose from "mongoose";
+import Adjunto from "./Adjunto.js";
 import User from "./User.js";
 import Area from "./Area.js";
 import autoIncrement from "./autoIncrement.js";
 import ESTADOS from "./Estados.js";
 
-const solicitudSchema = new mongoose.Schema ({
+const solicitudSchema = new mongoose.Schema(
+  {
     folio: {
-        type: String,
-        required: true,
-        unique: true,
-        immutable: true,
+      type: String,
+      required: true,
+      unique: true,
+      immutable: true,
     },
-    tipo:{
-        type : String,
-        required: true,
+    tipo: {
+      type: String,
+      required: true,
     },
-    descripcion:{
-        type:String,
-        required:true,
+    descripcion: {
+      type: String,
+      required: true,
     },
-    area:{
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: Area
+    area: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: Area,
     },
-    prioridad:{
-        type:String,
-        required:true,
+    prioridad: {
+      type: String,
+      required: true,
     },
-    estado:{
-        type:String,
-        enum: ESTADOS,
-        required: true,
-        default:"nuevo"
+    estado: {
+      type: String,
+      enum: ESTADOS,
+      required: true,
+      default: "nuevo",
     },
-    comentarios:{
-        type:String,
-
+    comentarios: {
+      type: String,
     },
-    solicitante_id:{
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: User
+    solicitante_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: User,
     },
-    supervisor_id:{
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: User
+    supervisor_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: User,
     },
-    tecnico_id:{
-        type: mongoose.Schema.Types.ObjectId, 
-        ref: User
+    tecnico_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: User,
     },
-    attach:{
-        type:Object,
-        
+    attach: {
+      type: Object,
+      ref: Adjunto,
     },
-    fecha_aprobacion:{
-        type: Date,
+    fecha_aprobacion: {
+      type: Date,
     },
-    fecha_cierre:{
-        type: Date,
-    }
-}, { timestamps: true })
+    fecha_cierre: {
+      type: Date,
+    },
+  },
+  { timestamps: true },
+);
 
 solicitudSchema.index({ tecnico_id: 1, createdAt: -1 });
 

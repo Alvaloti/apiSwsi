@@ -1,5 +1,4 @@
 import mongoose from "mongoose";
-import Adjunto from "./Adjunto.js";
 import User from "./User.js";
 import autoIncrement from "./autoIncrement.js";
 import ESTADOS from "./Estados.js";
@@ -47,10 +46,6 @@ const ticketSchema = new mongoose.Schema(
     },
     solucion: {
       type: String,
-    },
-    attached: {
-      type: Object,
-      ref : Adjunto
     },
     fecha_cierre: {
       type: Date,

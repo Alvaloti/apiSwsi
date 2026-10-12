@@ -1,5 +1,4 @@
 import mongoose from "mongoose";
-import Adjunto from "./Adjunto.js";
 import User from "./User.js";
 import Area from "./Area.js";
 import autoIncrement from "./autoIncrement.js";
@@ -49,10 +48,6 @@ const solicitudSchema = new mongoose.Schema(
     tecnico_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: User,
-    },
-    attach: {
-      type: Object,
-      ref: Adjunto,
     },
     fecha_aprobacion: {
       type: Date,

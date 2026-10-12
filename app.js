@@ -6,6 +6,8 @@ import bcrypt from "bcrypt";
 import cors from "cors";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser"; // Importar cookie-parser
+import multer from "multer";
+import path from "node:path";
 import Area from "./model/Area.js";
 import Category from "./model/Categoria.js";
 import Role from "./model/Role.js";
@@ -13,6 +15,7 @@ import Inventario from "./model/Inventario.js";
 import Solicitud from "./model/Solicitud.js";
 import Ticket from "./model/Ticket.js";
 import Asignacion from "./model/Asignacion.js";
+import Adjunto from "./model/Adjunto.js";
 import ESTADOS from "./model/Estados.js";
 const noCache = (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -57,6 +60,36 @@ const cookieOptions = {
 
 const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/swsi";
 const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
+
+const allowedAttachmentTypes = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+const uploadAttachment = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  fileFilter: (_req, file, callback) => {
+    if (!allowedAttachmentTypes.has(file.mimetype)) {
+      const error = new Error("Sólo se permiten archivos PDF, JPEG, PNG, GIF o WebP");
+      error.code = "INVALID_FILE_TYPE";
+      return callback(error);
+    }
+    callback(null, true);
+  },
+});
+const receiveAttachment = (req, res, next) => {
+  uploadAttachment.single("file")(req, res, (error) => {
+    if (!error) return next();
+    const status = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+    const message = error.code === "LIMIT_FILE_SIZE"
+      ? "El archivo no puede superar 10 MB"
+      : error.message || "No fue posible procesar el archivo";
+    return res.status(status).json({ status: "error", message });
+  });
+};
 
 const authenticate = (req, res, next) => {
   const token = req.cookies.token;
@@ -647,8 +680,18 @@ app.post("/api/createTicket", authenticate, async (req, res) => {
         message: "Todos los campos son obligatorios",
       });
     }
-    await Ticket.create({ titulo, descripcion, prioridad, solucion, solicitante_id: req.userId });
-    res.status(201).json({ status: "success", message: "Ticket registrado exitosamente" });
+    const ticket = await Ticket.create({
+      titulo,
+      descripcion,
+      prioridad,
+      solucion,
+      solicitante_id: req.userId,
+    });
+    res.status(201).json({
+      status: "success",
+      message: "Ticket registrado exitosamente",
+      ticket,
+    });
   } catch (error) {
     console.error("Error al registrar el ticket:", error);
     res
@@ -699,8 +742,19 @@ app.post("/api/createSolicitud", authenticate, async (req, res) => {
         message: "Todos los campos son obligatorios",
       });
     }
-    await Solicitud.create({ tipo, descripcion, comentarios, area, prioridad, solicitante_id: req.userId });
-    res.status(201).json({ status: "success", message: "Solicitud registrada exitosamente" });
+    const solicitud = await Solicitud.create({
+      tipo,
+      descripcion,
+      comentarios,
+      area,
+      prioridad,
+      solicitante_id: req.userId,
+    });
+    res.status(201).json({
+      status: "success",
+      message: "Solicitud registrada exitosamente",
+      solicitud,
+    });
   } catch (error) {
     console.error("Error al registrar la solicitud:", error);
     res
@@ -803,6 +857,124 @@ registerCrudRoutes(
   authorizeWorkItemUpdate,
   adminOnly,
 );
+
+const attachmentResponse = (attachment) => ({
+  _id: attachment._id,
+  solicitud_id: attachment.solicitud_id,
+  ticket_id: attachment.ticket_id,
+  name: attachment.name,
+  mime_type: attachment.mime_type,
+  ext: attachment.ext,
+  size: attachment.size,
+  uploaded_by: attachment.uploaded_by,
+  createdAt: attachment.createdAt,
+  updatedAt: attachment.updatedAt,
+  url: `/api/attachments/${attachment._id}/file`,
+});
+
+app.post(
+  "/api/attachments",
+  authenticate,
+  receiveAttachment,
+  async (req, res) => {
+    try {
+      const { solicitud_id, ticket_id } = req.body;
+      if (!req.file) {
+        return res.status(400).json({ status: "error", message: "El archivo es obligatorio" });
+      }
+      if (Boolean(solicitud_id) === Boolean(ticket_id)) {
+        return res.status(400).json({
+          status: "error",
+          message: "Indica exclusivamente solicitud_id o ticket_id",
+        });
+      }
+
+      const parentId = solicitud_id || ticket_id;
+      if (!mongoose.isValidObjectId(parentId)) {
+        return res.status(400).json({ status: "error", message: "Identificador inválido" });
+      }
+      const parent = solicitud_id
+        ? await Solicitud.exists({ _id: solicitud_id })
+        : await Ticket.exists({ _id: ticket_id });
+      if (!parent) {
+        return notFound(res, solicitud_id ? "Solicitud" : "Ticket");
+      }
+
+      const name = path.basename(req.file.originalname);
+      const ext = path.extname(name).slice(1).toLowerCase() ||
+        (req.file.mimetype === "application/pdf" ? "pdf" : req.file.mimetype.split("/")[1]);
+      const attachment = await Adjunto.create({
+        solicitud_id: solicitud_id || null,
+        ticket_id: ticket_id || null,
+        name,
+        mime_type: req.file.mimetype,
+        ext,
+        size: req.file.size,
+        data: req.file.buffer,
+        uploaded_by: req.userId,
+      });
+
+      res.status(201).json({
+        status: "success",
+        message: "Archivo adjunto guardado correctamente",
+        attachment: attachmentResponse(attachment),
+      });
+    } catch (error) {
+      console.error("Error al guardar el archivo adjunto:", error);
+      res.status(400).json({ status: "error", message: "No fue posible guardar el archivo adjunto" });
+    }
+  },
+);
+
+app.get("/api/attachments", authenticate, async (req, res) => {
+  try {
+    const { solicitud_id, ticket_id } = req.query;
+    if (Boolean(solicitud_id) === Boolean(ticket_id)) {
+      return res.status(400).json({
+        status: "error",
+        message: "Indica exclusivamente solicitud_id o ticket_id",
+      });
+    }
+    const filter = solicitud_id ? { solicitud_id } : { ticket_id };
+    const attachments = await Adjunto.find(filter)
+      .populate("uploaded_by", "id username name last_name")
+      .sort({ createdAt: -1 })
+      .lean();
+    res.json({
+      status: "success",
+      attachments: attachments.map(attachmentResponse),
+    });
+  } catch (error) {
+    res.status(400).json({ status: "error", message: "No fue posible obtener los archivos adjuntos" });
+  }
+});
+
+app.get("/api/attachments/:id/file", authenticate, async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return notFound(res, "Archivo adjunto");
+    const attachment = await Adjunto.findById(req.params.id).select("+data");
+    if (!attachment) return notFound(res, "Archivo adjunto");
+
+    res.setHeader("Content-Type", attachment.mime_type);
+    res.setHeader("Content-Length", attachment.size);
+    res.setHeader("Content-Disposition", `inline; filename*=UTF-8''${encodeURIComponent(attachment.name)}`);
+    res.setHeader("X-Content-Type-Options", "nosniff");
+    res.send(attachment.data);
+  } catch (error) {
+    res.status(400).json({ status: "error", message: "No fue posible obtener el archivo adjunto" });
+  }
+});
+
+app.delete("/api/attachments/:id", authenticate, async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return notFound(res, "Archivo adjunto");
+    const attachment = await Adjunto.findByIdAndDelete(req.params.id);
+    if (!attachment) return notFound(res, "Archivo adjunto");
+    res.json({ status: "success", message: "Archivo adjunto eliminado correctamente" });
+  } catch (error) {
+    res.status(400).json({ status: "error", message: "No fue posible eliminar el archivo adjunto" });
+  }
+});
 
 app.get("/api/assignments", authenticate, adminOnly, async (req, res) => {
   try {

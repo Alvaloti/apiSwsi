@@ -16,6 +16,7 @@ import Solicitud from "./model/Solicitud.js";
 import Ticket from "./model/Ticket.js";
 import Asignacion from "./model/Asignacion.js";
 import Adjunto from "./model/Adjunto.js";
+import Notificacion from "./model/Notificacion.js";
 import ESTADOS from "./model/Estados.js";
 const noCache = (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
@@ -166,6 +167,45 @@ const notFound = (res, resource) =>
 const pick = (source, fields) =>
   Object.fromEntries(fields.filter((field) => source[field] !== undefined).map((field) => [field, source[field]]));
 
+const notifyWorkItemChanges = async (path, previous, updated, actorId) => {
+  if (!previous || !updated || !["solicitudes", "tickets"].includes(path)) return;
+
+  const entityType = path === "solicitudes" ? "solicitud" : "ticket";
+  const entityLabel = entityType === "solicitud" ? "Solicitud" : "Ticket";
+  const folio = updated.folio || updated._id;
+  const notifications = [];
+  const previousTechnician = String(previous.tecnico_id || "");
+  const currentTechnician = String(updated.tecnico_id || "");
+
+  if (currentTechnician && currentTechnician !== previousTechnician && currentTechnician !== String(actorId)) {
+    notifications.push({
+      recipient: updated.tecnico_id,
+      type: "assignment",
+      title: `${entityLabel} asignado`,
+      message: `Se te asignó ${entityLabel.toLowerCase()} ${folio}.`,
+      entity_type: entityType,
+      entity_id: updated._id,
+    });
+  }
+
+  if (
+    updated.estado !== previous.estado &&
+    updated.solicitante_id &&
+    String(updated.solicitante_id) !== String(actorId)
+  ) {
+    notifications.push({
+      recipient: updated.solicitante_id,
+      type: "status",
+      title: `Estado de ${entityLabel.toLowerCase()} actualizado`,
+      message: `${entityLabel} ${folio} cambió de “${previous.estado}” a “${updated.estado}”.`,
+      entity_type: entityType,
+      entity_id: updated._id,
+    });
+  }
+
+  if (notifications.length) await Notificacion.insertMany(notifications);
+};
+
 const registerCrudRoutes = (
   path,
   Model,
@@ -177,11 +217,19 @@ const registerCrudRoutes = (
 ) => {
   app.put(`/api/${path}/:id`, authenticate, editAuthorization, async (req, res) => {
     try {
+      const previous = ["solicitudes", "tickets"].includes(path)
+        ? await Model.findById(getId(req)).lean()
+        : null;
       const updated = await Model.findByIdAndUpdate(getId(req), pick(req.body, fields), {
         new: true,
         runValidators: true,
       });
       if (!updated) return notFound(res, label);
+      try {
+        await notifyWorkItemChanges(path, previous, updated, req.userId);
+      } catch (notificationError) {
+        console.error("No fue posible crear la notificación:", notificationError);
+      }
       res.json({ status: "success", message: `${label} actualizado correctamente`, data: updated });
     } catch (error) {
       const status = error?.code === 11000 ? 409 : 400;
@@ -1102,6 +1150,49 @@ app.patch("/api/assignments/:id/return", authenticate, adminOnly, async (req, re
     res.json({ status: "success", message: "Devolución registrada correctamente", assignment });
   } catch {
     res.status(400).json({ status: "error", message: "No fue posible registrar la devolución" });
+  }
+});
+
+app.get("/api/notifications", authenticate, async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
+    const [notifications, unreadCount] = await Promise.all([
+      Notificacion.find({ recipient: req.userId })
+        .sort({ createdAt: -1 })
+        .limit(limit)
+        .lean(),
+      Notificacion.countDocuments({ recipient: req.userId, read_at: null }),
+    ]);
+    res.json({ status: "success", notifications, unreadCount });
+  } catch (error) {
+    res.status(500).json({ status: "error", message: "No fue posible obtener las notificaciones" });
+  }
+});
+
+app.patch("/api/notifications/read-all", authenticate, async (req, res) => {
+  try {
+    await Notificacion.updateMany(
+      { recipient: req.userId, read_at: null },
+      { $set: { read_at: new Date() } },
+    );
+    res.json({ status: "success", message: "Notificaciones marcadas como leídas" });
+  } catch (error) {
+    res.status(400).json({ status: "error", message: "No fue posible actualizar las notificaciones" });
+  }
+});
+
+app.patch("/api/notifications/:id/read", authenticate, async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) return notFound(res, "Notificación");
+    const notification = await Notificacion.findOneAndUpdate(
+      { _id: req.params.id, recipient: req.userId },
+      { $set: { read_at: new Date() } },
+      { new: true },
+    );
+    if (!notification) return notFound(res, "Notificación");
+    res.json({ status: "success", notification });
+  } catch (error) {
+    res.status(400).json({ status: "error", message: "No fue posible actualizar la notificación" });
   }
 });
 

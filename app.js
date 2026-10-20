@@ -121,6 +121,24 @@ const authorizeRoles = (...allowedRoles) => async (req, res, next) => {
 const adminOnly = authorizeRoles("admin", "administrador");
 const adminOrSupervisor = authorizeRoles("admin", "administrador", "supervisor");
 const supportStaff = authorizeRoles("admin", "administrador", "supervisor", "tecnico", "técnico");
+const getWorkItemVisibility = async (userId) => {
+  const user = await User.findById(userId).populate("rolId", "name active").lean();
+  if (!user || user.active === false || !user.rolId || user.rolId.active === false) {
+    const error = new Error("La cuenta o su rol no están disponibles");
+    error.status = 403;
+    throw error;
+  }
+
+  const role = String(user.rolId.name || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+
+  if (["admin", "administrador", "supervisor"].includes(role)) return {};
+  if (role === "tecnico") return { tecnico_id: userId };
+  return { solicitante_id: userId };
+};
 const authorizeWorkItemUpdate = async (req, res, next) => {
   try {
     const user = await User.findById(req.userId).populate("rolId", "name");
@@ -692,7 +710,7 @@ app.get("/api/getTickets", authenticate, async (req, res) => {
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 100);
     const search = String(req.query.search || "").trim();
-    const filter = req.query.assignedToMe === "true" ? { tecnico_id: req.userId } : {};
+    const filter = await getWorkItemVisibility(req.userId);
     if (search) {
       filter.$or = [
         { folio: { $regex: search, $options: "i" } },
@@ -713,9 +731,9 @@ app.get("/api/getTickets", authenticate, async (req, res) => {
     res.status(200).json({ status: "success", tickets, total });
   } catch (error) {
     console.error("Error al obtener los datos de Tickets:", error);
-    res.status(500).json({
+    res.status(error.status || 500).json({
       status: "error",
-      message: "Error al obtener los datos de Tickets",
+      message: error.status ? error.message : "Error al obtener los datos de Tickets",
     });
   }
 });
@@ -754,7 +772,7 @@ app.get("/api/getSolicitudes", authenticate, async (req, res) => {
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 100);
     const search = String(req.query.search || "").trim();
-    const filter = req.query.assignedToMe === "true" ? { tecnico_id: req.userId } : {};
+    const filter = await getWorkItemVisibility(req.userId);
     if (search) {
       filter.$or = [
         { folio: { $regex: search, $options: "i" } },
@@ -775,9 +793,9 @@ app.get("/api/getSolicitudes", authenticate, async (req, res) => {
     res.status(200).json({ status: "success", solicitudes, total });
   } catch (error) {
     console.error("Error al obtener los datos del Solicitudes:", error);
-    res.status(500).json({
+    res.status(error.status || 500).json({
       status: "error",
-      message: "Error al obtener los datos del Solicitudes",
+      message: error.status ? error.message : "Error al obtener los datos del Solicitudes",
     });
   }
 });

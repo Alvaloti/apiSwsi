@@ -99,7 +99,7 @@ const authenticate = (req, res, next) => {
     req.userId = jwt.verify(token, JWT_SECRET).userId;
     next();
   } catch {
-    res.clearCookie("token", { path: "/", httpOnly: true, sameSite: "lax" });
+    res.clearCookie("token", cookieOptions);
     return res.status(401).json({ status: "error", message: "Sesión inválida o expirada" });
   }
 };
@@ -119,6 +119,7 @@ const authorizeRoles = (...allowedRoles) => async (req, res, next) => {
 };
 
 const adminOnly = authorizeRoles("admin", "administrador");
+const adminOrSupervisor = authorizeRoles("admin", "administrador", "supervisor");
 const supportStaff = authorizeRoles("admin", "administrador", "supervisor", "tecnico", "técnico");
 const authorizeWorkItemUpdate = async (req, res, next) => {
   try {
@@ -341,7 +342,7 @@ app.post("/api/login", async (req, res) => {
     );
 
     res.cookie("token", token, {
-      cookieOptions,
+      ...cookieOptions,
       maxAge: 60 * 60 * 1000,
     }); // 1 hora en milisegundos
     const safeUser = user.toObject();
@@ -1150,6 +1151,122 @@ app.patch("/api/assignments/:id/return", authenticate, adminOnly, async (req, re
     res.json({ status: "success", message: "Devolución registrada correctamente", assignment });
   } catch {
     res.status(400).json({ status: "error", message: "No fue posible registrar la devolución" });
+  }
+});
+
+app.get("/api/reports", authenticate, adminOrSupervisor, async (req, res) => {
+  try {
+    const type = ["solicitudes", "tickets", "tecnicos"].includes(req.query.type)
+      ? req.query.type
+      : "solicitudes";
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 10, 1), 100);
+    const search = String(req.query.search || "").trim();
+    const dateFilter = {};
+
+    if (req.query.from) {
+      const from = new Date(`${req.query.from}T00:00:00.000-06:00`);
+      if (Number.isNaN(from.getTime())) {
+        return res.status(400).json({ status: "error", message: "Fecha inicial inválida" });
+      }
+      dateFilter.$gte = from;
+    }
+    if (req.query.to) {
+      const to = new Date(`${req.query.to}T23:59:59.999-06:00`);
+      if (Number.isNaN(to.getTime())) {
+        return res.status(400).json({ status: "error", message: "Fecha final inválida" });
+      }
+      dateFilter.$lte = to;
+    }
+    if (dateFilter.$gte && dateFilter.$lte && dateFilter.$gte > dateFilter.$lte) {
+      return res.status(400).json({ status: "error", message: "La fecha inicial no puede ser posterior a la final" });
+    }
+
+    const baseMatch = Object.keys(dateFilter).length ? { createdAt: dateFilter } : {};
+    const [solicitudSummary, ticketSummary] = await Promise.all([
+      Solicitud.aggregate([
+        { $match: baseMatch },
+        { $group: { _id: "$estado", total: { $sum: 1 }, unassigned: { $sum: { $cond: [{ $eq: [{ $ifNull: ["$tecnico_id", null] }, null] }, 1, 0] } } } },
+      ]),
+      Ticket.aggregate([
+        { $match: baseMatch },
+        { $group: { _id: "$estado", total: { $sum: 1 }, unassigned: { $sum: { $cond: [{ $eq: [{ $ifNull: ["$tecnico_id", null] }, null] }, 1, 0] } } } },
+      ]),
+    ]);
+    const sumTotals = (groups) => groups.reduce(
+      (result, group) => ({ total: result.total + group.total, unassigned: result.unassigned + group.unassigned }),
+      { total: 0, unassigned: 0 },
+    );
+    const solicitudTotals = sumTotals(solicitudSummary);
+    const ticketTotals = sumTotals(ticketSummary);
+    const summary = {
+      solicitudes: solicitudTotals.total,
+      tickets: ticketTotals.total,
+      sin_asignar: solicitudTotals.unassigned + ticketTotals.unassigned,
+      cerrados: [...solicitudSummary, ...ticketSummary]
+        .filter((item) => ["resuelto", "cerrado"].includes(item._id))
+        .reduce((total, item) => total + item.total, 0),
+      estados_solicitudes: solicitudSummary.map((item) => ({ estado: item._id, total: item.total })),
+      estados_tickets: ticketSummary.map((item) => ({ estado: item._id, total: item.total })),
+    };
+
+    if (type === "solicitudes" || type === "tickets") {
+      const Model = type === "solicitudes" ? Solicitud : Ticket;
+      const textFields = type === "solicitudes" ? ["folio", "tipo", "descripcion"] : ["folio", "titulo", "descripcion"];
+      const match = { ...baseMatch };
+      if (search) {
+        const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        match.$or = textFields.map((field) => ({ [field]: { $regex: escaped, $options: "i" } }));
+      }
+      const [rows, total] = await Promise.all([
+        Model.find(match)
+          .populate("solicitante_id", "username name last_name")
+          .populate("tecnico_id", "username name last_name")
+          .sort({ createdAt: -1 })
+          .skip((page - 1) * limit)
+          .limit(limit)
+          .lean(),
+        Model.countDocuments(match),
+      ]);
+      return res.json({ status: "success", type, summary, rows, total });
+    }
+
+    const technicianRoles = await Role.find({ name: /^t[eé]cnico$/i }).select("_id").lean();
+    const technicianMatch = { rolId: { $in: technicianRoles.map((role) => role._id) } };
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      technicianMatch.$or = ["username", "name", "last_name", "email"].map((field) => ({
+        [field]: { $regex: escaped, $options: "i" },
+      }));
+    }
+    const [technicians, total, solicitudLoads, ticketLoads] = await Promise.all([
+      User.find(technicianMatch)
+        .select("username name last_name email active area")
+        .populate("area", "name")
+        .sort({ name: 1, last_name: 1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      User.countDocuments(technicianMatch),
+      Solicitud.aggregate([{ $match: { ...baseMatch, tecnico_id: { $ne: null } } }, { $group: { _id: "$tecnico_id", total: { $sum: 1 }, cerrados: { $sum: { $cond: [{ $in: ["$estado", ["resuelto", "cerrado"]] }, 1, 0] } } } }]),
+      Ticket.aggregate([{ $match: { ...baseMatch, tecnico_id: { $ne: null } } }, { $group: { _id: "$tecnico_id", total: { $sum: 1 }, cerrados: { $sum: { $cond: [{ $in: ["$estado", ["resuelto", "cerrado"]] }, 1, 0] } } } }]),
+    ]);
+    const loadMap = new Map();
+    for (const group of [...solicitudLoads, ...ticketLoads]) {
+      const id = String(group._id);
+      const current = loadMap.get(id) || { asignados: 0, cerrados: 0 };
+      current.asignados += group.total;
+      current.cerrados += group.cerrados;
+      loadMap.set(id, current);
+    }
+    const rows = technicians.map((technician) => ({
+      ...technician,
+      ...(loadMap.get(String(technician._id)) || { asignados: 0, cerrados: 0 }),
+    }));
+    return res.json({ status: "success", type, summary, rows, total });
+  } catch (error) {
+    console.error("Error al generar el reporte:", error);
+    res.status(500).json({ status: "error", message: "No fue posible generar el reporte" });
   }
 });
 

@@ -1,1 +1,16 @@
-node_modules
+node_modules/
+
+# Environment variables and local secrets
+.env
+.env.*
+!.env.example
+
+# Logs, coverage and generated output
+*.log
+coverage/
+dist/
+
+# Editors and operating systems
+.DS_Store
+.idea/
+.vscode/

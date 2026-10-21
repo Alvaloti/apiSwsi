@@ -5,7 +5,7 @@ import User from "./model/User.js";
 import bcrypt from "bcrypt";
 import cors from "cors";
 import jwt from "jsonwebtoken";
-import cookieParser from "cookie-parser"; // Importar cookie-parser
+import cookieParser from "cookie-parser";
 import multer from "multer";
 import path from "node:path";
 import Area from "./model/Area.js";
@@ -50,7 +50,7 @@ app.use(
   }),
 );
 
-app.use(cookieParser()); // Middleware para parsear cookies
+app.use(cookieParser());
 
 const cookieOptions = {
   httpOnly: true,
@@ -59,8 +59,13 @@ const cookieOptions = {
   path: "/",
 };
 
-const MONGO_URI = process.env.MONGO_URI || "mongodb://localhost:27017/swsi";
-const JWT_SECRET = process.env.JWT_SECRET || "your_jwt_secret_key";
+const MONGO_URI = process.env.MONGO_URI;
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!MONGO_URI || !JWT_SECRET) {
+  console.error("Faltan las variables de entorno MONGO_URI o JWT_SECRET");
+  process.exit(1);
+}
 
 const allowedAttachmentTypes = new Set([
   "application/pdf",

@@ -30,7 +30,15 @@ export default function autoIncrement(schema, { field = "id", counterName }) {
         {
           $set: {
             sequence: {
-              $add: [{ $ifNull: ["$sequence", result?.maxValue ?? 0] }, 1],
+              $add: [
+                {
+                  $max: [
+                    { $ifNull: ["$sequence", 0] },
+                    result?.maxValue ?? 0,
+                  ],
+                },
+                1,
+              ],
             },
           },
         },

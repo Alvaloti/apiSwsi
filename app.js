@@ -814,6 +814,13 @@ app.post("/api/createSolicitud", authenticate, async (req, res) => {
         message: "Todos los campos son obligatorios",
       });
     }
+    if (!mongoose.isValidObjectId(area)) {
+      return res.status(400).json({ status: "error", message: "El área seleccionada no es válida" });
+    }
+    const selectedArea = await Area.exists({ _id: area, active: { $ne: false } });
+    if (!selectedArea) {
+      return res.status(400).json({ status: "error", message: "El área seleccionada no está disponible" });
+    }
     const solicitud = await Solicitud.create({
       tipo,
       descripcion,
@@ -829,9 +836,19 @@ app.post("/api/createSolicitud", authenticate, async (req, res) => {
     });
   } catch (error) {
     console.error("Error al registrar la solicitud:", error);
-    res
-      .status(500)
-      .json({ status: "error", message: "Error al registrar la solicitud" });
+    if (error?.code === 11000) {
+      return res.status(409).json({
+        status: "error",
+        message: "No fue posible generar un folio único; intenta nuevamente",
+      });
+    }
+    if (error?.name === "ValidationError" || error?.name === "CastError") {
+      return res.status(400).json({
+        status: "error",
+        message: "Los datos de la solicitud no son válidos",
+      });
+    }
+    res.status(500).json({ status: "error", message: "Error interno al registrar la solicitud" });
   }
 });
 

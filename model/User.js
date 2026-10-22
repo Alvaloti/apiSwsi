@@ -17,6 +17,10 @@ const userDetailsSchema = new mongoose.Schema({
     type: String,
     required: true,
     unique: true,
+    trim: true,
+    lowercase: true,
+    maxlength: 50,
+    match: [/^[A-Za-z0-9]+\.[A-Za-z0-9]+$/, "El usuario debe tener el formato nombre.apellido"],
   },
   nomina: {
     type: Number,

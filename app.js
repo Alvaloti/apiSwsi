@@ -61,6 +61,12 @@ const cookieOptions = {
 
 const MONGO_URI = process.env.MONGO_URI;
 const JWT_SECRET = process.env.JWT_SECRET;
+const USERNAME_PATTERN = /^[A-Za-z0-9]+\.[A-Za-z0-9]+$/;
+const normalizeUsername = (value) => String(value || "").trim().toLowerCase();
+const isValidUsername = (value) => {
+  const username = normalizeUsername(value);
+  return username.length <= 50 && USERNAME_PATTERN.test(username);
+};
 
 if (!MONGO_URI || !JWT_SECRET) {
   console.error("Faltan las variables de entorno MONGO_URI o JWT_SECRET");
@@ -300,7 +306,16 @@ app.post("/api/register", adminOrFirstUser, async (req, res) => {
         message: "Todos los campos son obligatorios",
       });
     }
-    const existingUser = await User.findOne({ email });
+    if (!isValidUsername(username)) {
+      return res.status(400).json({
+        status: "error",
+        message: "El usuario debe tener el formato nombre.apellido, sin espacios ni caracteres especiales",
+      });
+    }
+    const normalizedUsername = normalizeUsername(username);
+    const existingUser = await User.findOne({
+      $or: [{ email: String(email).trim().toLowerCase() }, { username: normalizedUsername }, { nomina }],
+    });
     if (existingUser) {
       return res
         .status(400)
@@ -308,7 +323,7 @@ app.post("/api/register", adminOrFirstUser, async (req, res) => {
     }
     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = await User.create({
-      username,
+      username: normalizedUsername,
       nomina,
       email,
       password: hashedPassword,
@@ -413,8 +428,15 @@ app.get("/api/user", async (req, res) => {
 
 app.put("/api/profile", authenticate, async (req, res) => {
   try {
+    if (req.body.username !== undefined && !isValidUsername(req.body.username)) {
+      return res.status(400).json({
+        status: "error",
+        message: "El usuario debe tener el formato nombre.apellido, sin espacios ni caracteres especiales",
+      });
+    }
     const fields = ["username", "nomina", "email", "name", "last_name", "area"];
     const update = pick(req.body, fields);
+    if (update.username) update.username = normalizeUsername(update.username);
     if (req.body.password) update.password = await bcrypt.hash(req.body.password, 10);
 
     const user = await User.findByIdAndUpdate(req.userId, update, {
@@ -854,8 +876,15 @@ app.post("/api/createSolicitud", authenticate, async (req, res) => {
 
 app.put("/api/users/:id", authenticate, adminOnly, async (req, res) => {
   try {
+    if (req.body.username !== undefined && !isValidUsername(req.body.username)) {
+      return res.status(400).json({
+        status: "error",
+        message: "El usuario debe tener el formato nombre.apellido, sin espacios ni caracteres especiales",
+      });
+    }
     const fields = ["username", "nomina", "email", "name", "last_name", "rolId", "area", "active"];
     const update = pick(req.body, fields);
+    if (update.username) update.username = normalizeUsername(update.username);
     if (req.body.password) update.password = await bcrypt.hash(req.body.password, 10);
     const user = await User.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true })
       .select("-password");

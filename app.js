@@ -37,6 +37,15 @@ const allowedOrigins = (
   .split(",")
   .map(origin => origin.trim());
 
+//conectar con MongoDB
+mongoose
+  .connect(MONGO_URI, {
+    //useNewUrlParser: true,
+    //useUnifiedTopology: true,
+  })
+  .then(() => console.log("✅ Conectado a MongoDB"))
+  .catch((error) => console.error("❌ Error al conectar a MongoDB:", error));
+
 app.use(
   cors({
     origin(origin, callback) {
@@ -279,15 +288,6 @@ const registerCrudRoutes = (
     }
   });
 };
-
-//conectar con MongoDB
-mongoose
-  .connect(MONGO_URI, {
-    //useNewUrlParser: true,
-    //useUnifiedTopology: true,
-  })
-  .then(() => console.log("✅ Conectado a MongoDB"))
-  .catch((error) => console.error("❌ Error al conectar a MongoDB:", error));
 
 app.get("/api/status", (req, res) => {
   res.status(200).json({ status: "Servidor funcionando correctamente" });

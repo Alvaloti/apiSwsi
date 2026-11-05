@@ -25,6 +25,11 @@ const roleSchema = new mongoose.Schema({
       type: String,
     },
   ],
+  permissions_version: {
+    type: Number,
+    default: 0,
+    select: false,
+  },
 }, {timestamps:true});
 
 autoIncrement(roleSchema, { field: "id", counterName: "role" });

@@ -14,3 +14,11 @@ dist/
 .DS_Store
 .idea/
 .vscode/
+
+# Inventory history models (override the workstation's global *.* rule)
+!model/Mantenimiento.js
+!model/EquipoEvento.js
+!model/Auditoria.js
+!model/Catalogo.js
+!model/SlaPolicy.js
+!model/NotificationPreference.js

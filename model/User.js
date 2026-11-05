@@ -61,6 +61,27 @@ const userDetailsSchema = new mongoose.Schema({
     type:Boolean,
     default:true
   },
+  failedLoginAttempts: {
+    type: Number,
+    default: 0,
+    min: 0,
+    select: false,
+  },
+  lockUntil: {
+    type: Date,
+    default: null,
+    select: false,
+  },
+  passwordResetTokenHash: {
+    type: String,
+    default: null,
+    select: false,
+  },
+  passwordResetExpires: {
+    type: Date,
+    default: null,
+    select: false,
+  },
 }, { timestamps: true });
 
 autoIncrement(userDetailsSchema, { field: "id", counterName: "user" });

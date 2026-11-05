@@ -10,7 +10,7 @@ const notificationSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ["assignment", "status"],
+      enum: ["assignment", "status", "decision", "solution", "escalation", "closure", "sla_warning", "sla_breach"],
       required: true,
     },
     title: {
@@ -36,11 +36,15 @@ const notificationSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+    unique_key: {
+      type: String,
+    },
   },
   { timestamps: true },
 );
 
 notificationSchema.index({ recipient: 1, read_at: 1, createdAt: -1 });
+notificationSchema.index({ unique_key: 1 }, { unique: true, partialFilterExpression: { unique_key: { $type: "string" } } });
 
 const Notificacion = mongoose.model("Notificacion", notificationSchema, "notificaciones");
 

@@ -2,7 +2,6 @@ import mongoose from "mongoose";
 import User from "./User.js";
 import Area from "./Area.js";
 import autoIncrement from "./autoIncrement.js";
-import ESTADOS from "./Estados.js";
 
 const solicitudSchema = new mongoose.Schema(
   {
@@ -30,7 +29,6 @@ const solicitudSchema = new mongoose.Schema(
     },
     estado: {
       type: String,
-      enum: ESTADOS,
       required: true,
       default: "nuevo",
     },
@@ -45,6 +43,21 @@ const solicitudSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: User,
     },
+    estado_aprobacion: {
+      type: String,
+      enum: ["pendiente", "aprobada", "rechazada"],
+      required: true,
+      default: "pendiente",
+      index: true,
+    },
+    fecha_revision: {
+      type: Date,
+    },
+    motivo_rechazo: {
+      type: String,
+      trim: true,
+      maxlength: 1000,
+    },
     tecnico_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: User,
@@ -55,11 +68,16 @@ const solicitudSchema = new mongoose.Schema(
     fecha_cierre: {
       type: Date,
     },
+    sla_response_due: Date,
+    sla_resolution_due: Date,
+    sla_warning_at: Date,
+    first_response_at: Date,
   },
   { timestamps: true },
 );
 
 solicitudSchema.index({ tecnico_id: 1, createdAt: -1 });
+solicitudSchema.index({ estado_aprobacion: 1, createdAt: -1 });
 
 autoIncrement(solicitudSchema, { field: "folio", counterName: "solicitud" });
 

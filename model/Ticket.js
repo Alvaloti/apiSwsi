@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import User from "./User.js";
 import autoIncrement from "./autoIncrement.js";
+import Category from "./Categoria.js";
 
 const ticketSchema = new mongoose.Schema(
   {
@@ -13,6 +14,11 @@ const ticketSchema = new mongoose.Schema(
     titulo: {
       type: String,
       required: true,
+    },
+    category_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: Category,
+      default: null,
     },
     descripcion: {
       type: String,

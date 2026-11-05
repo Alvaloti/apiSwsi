@@ -1,6 +1,7 @@
 import mongoose from "mongoose";
 import User from "./User.js";
 import Area from "./Area.js";
+import Category from "./Categoria.js";
 import autoIncrement from "./autoIncrement.js";
 
 const solicitudSchema = new mongoose.Schema(
@@ -14,6 +15,11 @@ const solicitudSchema = new mongoose.Schema(
     tipo: {
       type: String,
       required: true,
+    },
+    category_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: Category,
+      default: null,
     },
     descripcion: {
       type: String,

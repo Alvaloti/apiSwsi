@@ -25,6 +25,8 @@ import EquipoEvento from "./model/EquipoEvento.js";
 import Auditoria from "./model/Auditoria.js";
 import SlaPolicy from "./model/SlaPolicy.js";
 import NotificationPreference from "./model/NotificationPreference.js";
+import NotificationSetting from "./model/NotificationSetting.js";
+import SystemSetting from "./model/SystemSetting.js";
 const noCache = (req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     res.setHeader('Pragma', 'no-cache');
@@ -171,6 +173,8 @@ const PERMISSIONS = [
   ["reports.view", "Consultar reportes", "Visualizar y exportar reportes"],
   ["audit.view", "Consultar auditoría", "Visualizar accesos y operaciones"],
   ["sla.manage", "Configurar SLA", "Modificar políticas de nivel de servicio"],
+  ["notifications.manage", "Configurar notificaciones", "Administrar las reglas globales de notificación"],
+  ["settings.manage", "Parámetros generales", "Modificar la configuración general del sistema"],
   ["work.view_all", "Ver todos los casos", "Consultar todas las solicitudes y tickets"],
   ["work.view_assigned", "Ver casos asignados", "Consultar solicitudes y tickets asignados"],
   ["work.assign", "Asignar técnicos", "Asignar solicitudes y tickets"],
@@ -260,6 +264,16 @@ const notificationPreferenceFields = ["assignment", "status", "decision", "solut
 const getNotificationPreferences = async (userId) => NotificationPreference.findOneAndUpdate(
   { user_id: userId }, { $setOnInsert: { user_id: userId } }, { new: true, upsert: true, setDefaultsOnInsert: true },
 );
+const getGlobalNotificationSettings = () => NotificationSetting.findOneAndUpdate(
+  { key: "global" }, { $setOnInsert: { key: "global" } }, { new: true, upsert: true, setDefaultsOnInsert: true },
+);
+let lastNotificationCleanup = 0;
+const cleanExpiredNotifications = async (retentionDays) => {
+  if (Date.now() - lastNotificationCleanup < 60 * 60 * 1000) return;
+  lastNotificationCleanup = Date.now();
+  const threshold = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000);
+  await Notificacion.deleteMany({ createdAt: { $lt: threshold } });
+};
 const normalizeUsername = (value) => String(value || "").trim().toLowerCase();
 const isValidUsername = (value) => {
   const username = normalizeUsername(value);
@@ -268,6 +282,9 @@ const isValidUsername = (value) => {
 
 const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
 const isStrongPassword = (value) => PASSWORD_PATTERN.test(String(value || ""));
+const getSystemSettings = () => SystemSetting.findOneAndUpdate(
+  { key: "general" }, { $setOnInsert: { key: "general" } }, { new: true, upsert: true, setDefaultsOnInsert: true },
+);
 
 const createMailTransport = () => {
   const { SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS } = process.env;
@@ -289,7 +306,7 @@ const allowedAttachmentTypes = new Set([
 ]);
 const uploadAttachment = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024, files: 1 },
+  limits: { fileSize: 25 * 1024 * 1024, files: 1 },
   fileFilter: (_req, file, callback) => {
     if (!allowedAttachmentTypes.has(file.mimetype)) {
       const error = new Error("Sólo se permiten archivos PDF, JPEG, PNG, GIF o WebP");
@@ -304,7 +321,7 @@ const receiveAttachment = (req, res, next) => {
     if (!error) return next();
     const status = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
     const message = error.code === "LIMIT_FILE_SIZE"
-      ? "El archivo no puede superar 10 MB"
+      ? "El archivo supera el límite máximo permitido"
       : error.message || "No fue posible procesar el archivo";
     return res.status(status).json({ status: "error", message });
   });
@@ -364,6 +381,8 @@ const catalogsManager = authorizePermission("catalogs.manage");
 const inventoryManager = authorizePermission("inventory.manage");
 const slaManager = authorizePermission("sla.manage");
 const auditViewer = authorizePermission("audit.view");
+const notificationManager = authorizePermission("notifications.manage");
+const settingsManager = authorizePermission("settings.manage");
 const usersReader = authorizeAnyPermission("users.manage", "work.assign");
 const getWorkItemVisibility = async (userId) => {
   const user = await getAuthorizedUser(userId);
@@ -717,6 +736,95 @@ app.post("/api/register", adminOrFirstUser, async (req, res) => {
   }
 });
 
+app.post("/api/users/import", authenticate, usersManager, async (req, res) => {
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows.slice(0, 200) : [];
+    if (!rows.length) return res.status(400).json({ status: "error", message: "El archivo no contiene usuarios" });
+    if (req.body.rows.length > 200) return res.status(413).json({ status: "error", message: "Sólo se permiten 200 usuarios por archivo" });
+
+    const [roles, areas] = await Promise.all([
+      Role.find({ active: { $ne: false } }).select("name").lean(),
+      Area.find({ active: { $ne: false } }).select("name").lean(),
+    ]);
+    const normalizeLookup = (value) => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim().toLowerCase();
+    const roleMap = new Map(roles.flatMap((role) => [[String(role._id), role], [normalizeLookup(role.name), role]]));
+    const areaMap = new Map(areas.flatMap((area) => [[String(area._id), area], [normalizeLookup(area.name), area]]));
+    const usernames = new Set();
+    const emails = new Set();
+    const payrollNumbers = new Set();
+    const candidates = [];
+    const errors = [];
+
+    rows.forEach((source, index) => {
+      const rowNumber = index + 2;
+      const username = normalizeUsername(source.username);
+      const email = normalizeEmail(source.email);
+      const payrollText = String(source.nomina ?? "").trim();
+      const nomina = Number(payrollText);
+      const password = String(source.password || "");
+      const name = String(source.name || "").trim();
+      const lastName = String(source.last_name || "").trim();
+      const role = roleMap.get(String(source.role || "").trim()) || roleMap.get(normalizeLookup(source.role));
+      const area = areaMap.get(String(source.area || "").trim()) || areaMap.get(normalizeLookup(source.area));
+      const messages = [];
+      if (!isValidUsername(username)) messages.push("Usuario inválido; usa nombre.apellido");
+      if (!/^\S+@\S+\.\S+$/.test(email)) messages.push("Correo electrónico inválido");
+      if (!payrollText || !Number.isSafeInteger(nomina) || nomina < 0) messages.push("Nómina inválida");
+      if (!isStrongPassword(password)) messages.push("La contraseña no cumple la política de seguridad");
+      if (!name) messages.push("Nombre obligatorio");
+      if (!lastName) messages.push("Apellidos obligatorios");
+      if (!role) messages.push("Rol inexistente o inactivo");
+      if (!area) messages.push("Área inexistente o inactiva");
+      if (usernames.has(username)) messages.push("Usuario repetido dentro del archivo");
+      if (emails.has(email)) messages.push("Correo repetido dentro del archivo");
+      if (payrollNumbers.has(nomina)) messages.push("Nómina repetida dentro del archivo");
+      usernames.add(username); emails.add(email); payrollNumbers.add(nomina);
+      if (messages.length) errors.push({ row: rowNumber, username, messages });
+      else candidates.push({ row: rowNumber, username, email, nomina, password, name, last_name: lastName, rolId: role._id, area: area._id, active: !["false", "0", "no"].includes(normalizeLookup(source.active)) });
+    });
+
+    if (candidates.length) {
+      const existing = await User.find({ $or: [
+        { username: { $in: candidates.map((row) => row.username) } },
+        { email: { $in: candidates.map((row) => row.email) } },
+        { nomina: { $in: candidates.map((row) => row.nomina) } },
+      ] }).select("username email nomina").lean();
+      const existingUsernames = new Set(existing.map((user) => user.username));
+      const existingEmails = new Set(existing.map((user) => user.email));
+      const existingPayroll = new Set(existing.map((user) => Number(user.nomina)));
+      for (let index = candidates.length - 1; index >= 0; index -= 1) {
+        const candidate = candidates[index];
+        const messages = [];
+        if (existingUsernames.has(candidate.username)) messages.push("El usuario ya existe");
+        if (existingEmails.has(candidate.email)) messages.push("El correo ya existe");
+        if (existingPayroll.has(candidate.nomina)) messages.push("La nómina ya existe");
+        if (messages.length) {
+          errors.push({ row: candidate.row, username: candidate.username, messages });
+          candidates.splice(index, 1);
+        }
+      }
+    }
+
+    const documents = [];
+    for (let index = 0; index < candidates.length; index += 10) {
+      const batch = candidates.slice(index, index + 10);
+      documents.push(...await Promise.all(batch.map(async ({ row, ...candidate }) => ({ ...candidate, password: await bcrypt.hash(candidate.password, 10) }))));
+    }
+    if (documents.length) await User.insertMany(documents, { ordered: true });
+    errors.sort((a, b) => a.row - b.row);
+    return res.status(documents.length ? 201 : 400).json({
+      status: documents.length ? "success" : "error",
+      message: `${documents.length} usuario${documents.length === 1 ? "" : "s"} importado${documents.length === 1 ? "" : "s"}; ${errors.length} fila${errors.length === 1 ? "" : "s"} con errores`,
+      imported: documents.length,
+      rejected: errors.length,
+      errors,
+    });
+  } catch (error) {
+    console.error("Error al importar usuarios:", error);
+    return res.status(500).json({ status: "error", message: "No fue posible completar la importación" });
+  }
+});
+
 app.post("/api/login", async (req, res) => {
   try {
     await ensureRolePermissions();
@@ -787,16 +895,22 @@ app.post("/api/login", async (req, res) => {
       user.lockUntil = null;
       await user.save({ validateBeforeSave: false });
     }
+    const systemSettings = await getSystemSettings();
+    if (systemSettings.maintenance_mode && !hasPermission(user, "system.manage")) {
+      auditAccess(req, { action: "inicio_bloqueado", user_id: user._id, user_email: user.email, success: false, status_code: 503, details: { reason: "mantenimiento" } });
+      return res.status(503).json({ status: "error", message: systemSettings.maintenance_message });
+    }
+    const sessionMinutes = systemSettings.session_duration_minutes;
     const token = jwt.sign(
       { userId: user._id, email: user.email },
       JWT_SECRET,
-      { expiresIn: "1h" },
+      { expiresIn: `${sessionMinutes}m` },
     );
 
     res.cookie("token", token, {
       ...cookieOptions,
-      maxAge: 60 * 60 * 1000,
-    }); // 1 hora en milisegundos
+      maxAge: sessionMinutes * 60 * 1000,
+    });
     const safeUser = user.toObject();
     delete safeUser.password;
     delete safeUser.failedLoginAttempts;
@@ -1062,24 +1176,31 @@ app.post("/api/createArea", authenticate, catalogsManager, async (req, res) => {
   }
 });
 
-app.get("/api/getCategories", async (req, res) => {
-  const token = req.cookies.token;
-  if (!token) {
-    return res.status(401).json({ status: "error", message: "No autorizado" });
-  }
-  try { 
-    const category = await Category.find({});
-    if (!category) {
-      return res
-        .status(404)
-        .json({ status: "error", message: "Categorías no encontrado" });
+app.get("/api/getCategories", authenticate, async (req, res) => {
+  try {
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(1, Number.parseInt(req.query.limit, 10) || 20));
+    const search = String(req.query.search || "").trim().slice(0, 100);
+    const appliesTo = ["solicitud", "ticket"].includes(req.query.applies_to) ? req.query.applies_to : null;
+    const filter = {};
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      filter.$or = [{ name: { $regex: escaped, $options: "i" } }, { description: { $regex: escaped, $options: "i" } }];
     }
-    res.status(200).json({ status: "success", category: category });
+    if (appliesTo) {
+      filter.active = { $ne: false };
+      filter.applies_to = { $in: ["ambos", appliesTo] };
+    }
+    const [categories, total] = await Promise.all([
+      Category.find(filter).sort({ name: 1 }).skip((page - 1) * limit).limit(limit).lean(),
+      Category.countDocuments(filter),
+    ]);
+    res.status(200).json({ status: "success", category: categories, categories, total });
   } catch (error) {
     console.error("Error al obtener los datos del Categorías:", error);
     res.status(500).json({
       status: "error",
-      message: "Error al obtener los datos del Categorías",
+      message: "Error al obtener las categorías",
     });
   }
 });
@@ -1088,6 +1209,7 @@ app.post("/api/createCategory", authenticate, catalogsManager, async (req, res) 
   console.log("Datos para crear la categoría: ", req.body);
   try {
     const { name, description } = req.body;
+    const appliesTo = ["ambos", "solicitud", "ticket"].includes(req.body.applies_to) ? req.body.applies_to : "ambos";
     if (!name || !description) {
       return res.status(400).json({
         status: "error",
@@ -1100,7 +1222,7 @@ app.post("/api/createCategory", authenticate, catalogsManager, async (req, res) 
         .status(400)
         .json({ status: "error", message: "La categoría ya existe" });
     }
-    const newCategory = await Category.create({ name, description });
+    const newCategory = await Category.create({ name, description, applies_to: appliesTo });
     console.log("Catrgoría registrada: ", newCategory);
     res.status(201).json({
       status: "success",
@@ -1182,19 +1304,48 @@ app.get("/api/getRolesForUser", authenticate, usersManager, async (req, res) => 
 });
 
 app.get("/api/getItems", authenticate, inventoryManager, async (req, res) => {
-  try { 
-    const items = await Inventario.find({}).populate("assigned_to", "username name");
-    if (!items) {
-      return res
-        .status(404)
-        .json({ status: "error", message: "Dispositivos no encontrado" });
+  try {
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+    const maxLimit = req.query.available === "true" ? 500 : 100;
+    const limit = Math.min(maxLimit, Math.max(1, Number.parseInt(req.query.limit, 10) || 10));
+    const search = String(req.query.search || "").trim().slice(0, 100);
+    const filter = {};
+    if (search) {
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const regex = new RegExp(escaped, "i");
+      const assignedUsers = await User.find({
+        $or: [{ username: regex }, { name: regex }, { last_name: regex }, { email: regex }],
+      }).select("_id").limit(100).lean();
+      filter.$or = [
+        { type: regex },
+        { brand: regex },
+        { model: regex },
+        { serial_number: regex },
+        { status: regex },
+        { assigned_to: { $in: assignedUsers.map((user) => user._id) } },
+      ];
+      if (/^\d+$/.test(search)) filter.$or.push({ id: Number(search) });
     }
-    res.status(200).json({ status: "success", items });
+    if (req.query.status) filter.status = String(req.query.status).trim();
+    if (req.query.available === "true") {
+      filter.assigned_to = null;
+      filter.status = { $nin: [/^baja$/i, /^mantenimiento$/i] };
+    }
+    const [items, total] = await Promise.all([
+      Inventario.find(filter)
+        .populate("assigned_to", "username name last_name email")
+        .sort({ id: 1 })
+        .skip((page - 1) * limit)
+        .limit(limit)
+        .lean(),
+      Inventario.countDocuments(filter),
+    ]);
+    res.status(200).json({ status: "success", items, total, page, limit });
   } catch (error) {
     console.error("Error al obtener los datos del Dispositivos:", error);
     res.status(500).json({
       status: "error",
-      message: "Error al obtener los datos del Dispositivos",
+      message: "Error al obtener los datos de inventario",
     });
   }
 });
@@ -1396,6 +1547,7 @@ app.get("/api/getTickets", authenticate, async (req, res) => {
     }
     const [tickets, total] = await Promise.all([
       Ticket.find(filter)
+        .populate("category_id", "name description applies_to")
         .populate("solicitante_id", "username name last_name")
         .populate("tecnico_id", "username name last_name")
         .populate("solucion_por", "username name last_name")
@@ -1418,8 +1570,8 @@ app.get("/api/getTickets", authenticate, async (req, res) => {
 
 app.post("/api/createTicket", authenticate, async (req, res) => {
   try {
-    const { titulo, descripcion, prioridad } = req.body;
-    if (!titulo || !descripcion || !prioridad) {
+    const { titulo, descripcion, prioridad, category } = req.body;
+    if (!titulo || !descripcion || !prioridad || !category) {
       return res.status(400).json({
         status: "error",
         message: "Todos los campos son obligatorios",
@@ -1428,9 +1580,13 @@ app.post("/api/createTicket", authenticate, async (req, res) => {
     if (!await findActiveCatalogValue("prioridad", prioridad, "ticket")) {
       return res.status(400).json({ status: "error", message: "La prioridad seleccionada no está disponible" });
     }
+    if (!mongoose.isValidObjectId(category)) return res.status(400).json({ status: "error", message: "La categoría seleccionada no es válida" });
+    const selectedCategory = await Category.findOne({ _id: category, active: { $ne: false }, applies_to: { $in: ["ambos", "ticket"] } });
+    if (!selectedCategory) return res.status(400).json({ status: "error", message: "La categoría seleccionada no está disponible para tickets" });
     const slaDates = await buildSlaDates(prioridad);
     const ticket = await Ticket.create({
       titulo,
+      category_id: selectedCategory._id,
       descripcion,
       prioridad,
       solicitante_id: req.userId,
@@ -1652,6 +1808,7 @@ app.get("/api/getSolicitudes", authenticate, async (req, res) => {
     }
     const [solicitudes, total] = await Promise.all([
       Solicitud.find(filter)
+        .populate("category_id", "name description applies_to")
         .populate("solicitante_id", "username name last_name")
         .populate("tecnico_id", "username name last_name")
         .populate("supervisor_id", "username name last_name")
@@ -1673,8 +1830,8 @@ app.get("/api/getSolicitudes", authenticate, async (req, res) => {
 
 app.post("/api/createSolicitud", authenticate, async (req, res) => {
   try {
-    const { tipo, descripcion, comentarios, area, prioridad } = req.body;
-    if (!tipo || !descripcion || !area || !prioridad) {
+    const { category, descripcion, comentarios, area, prioridad } = req.body;
+    if (!category || !descripcion || !area || !prioridad) {
       return res.status(400).json({
         status: "error",
         message: "Todos los campos son obligatorios",
@@ -1683,6 +1840,9 @@ app.post("/api/createSolicitud", authenticate, async (req, res) => {
     if (!await findActiveCatalogValue("prioridad", prioridad, "solicitud")) {
       return res.status(400).json({ status: "error", message: "La prioridad seleccionada no está disponible" });
     }
+    if (!mongoose.isValidObjectId(category)) return res.status(400).json({ status: "error", message: "La categoría seleccionada no es válida" });
+    const selectedCategory = await Category.findOne({ _id: category, active: { $ne: false }, applies_to: { $in: ["ambos", "solicitud"] } });
+    if (!selectedCategory) return res.status(400).json({ status: "error", message: "La categoría seleccionada no está disponible para solicitudes" });
     if (!mongoose.isValidObjectId(area)) {
       return res.status(400).json({ status: "error", message: "El área seleccionada no es válida" });
     }
@@ -1692,7 +1852,8 @@ app.post("/api/createSolicitud", authenticate, async (req, res) => {
     }
     const slaDates = await buildSlaDates(prioridad);
     const solicitud = await Solicitud.create({
-      tipo,
+      tipo: selectedCategory.name,
+      category_id: selectedCategory._id,
       descripcion,
       comentarios,
       area,
@@ -1873,7 +2034,17 @@ registerCrudRoutes(
       ? "El área tiene registros relacionados; desactívala en lugar de eliminarla"
       : null,
 );
-registerCrudRoutes("categories", Category, ["name", "description", "active"], "Categoría", catalogsManager, catalogsManager);
+registerCrudRoutes(
+  "categories",
+  Category,
+  ["name", "description", "applies_to", "active"],
+  "Categoría",
+  catalogsManager,
+  catalogsManager,
+  async (id) => (await Solicitud.exists({ category_id: id })) || (await Ticket.exists({ category_id: id }))
+    ? "La categoría tiene registros relacionados; desactívala en lugar de eliminarla"
+    : null,
+);
 registerCrudRoutes(
   "roles",
   Role,
@@ -1940,6 +2111,10 @@ app.post(
       const { solicitud_id, ticket_id } = req.body;
       if (!req.file) {
         return res.status(400).json({ status: "error", message: "El archivo es obligatorio" });
+      }
+      const systemSettings = await getSystemSettings();
+      if (req.file.size > systemSettings.max_attachment_mb * 1024 * 1024) {
+        return res.status(413).json({ status: "error", message: `El archivo no puede superar ${systemSettings.max_attachment_mb} MB` });
       }
       if (Boolean(solicitud_id) === Boolean(ticket_id)) {
         return res.status(400).json({
@@ -2372,6 +2547,70 @@ app.put("/api/sla-policies/:priority", authenticate, slaManager, async (req, res
   }
 });
 
+app.get("/api/system-settings", authenticate, async (_req, res) => {
+  try {
+    const settings = await getSystemSettings();
+    return res.json({ status: "success", settings });
+  } catch {
+    return res.status(500).json({ status: "error", message: "No fue posible consultar los parámetros generales" });
+  }
+});
+
+app.put("/api/system-settings", authenticate, settingsManager, async (req, res) => {
+  try {
+    const update = pick(req.body, [
+      "system_name", "organization_name", "support_email", "timezone", "date_format", "default_page_size",
+      "max_attachment_mb", "session_duration_minutes", "maintenance_mode", "maintenance_message",
+    ]);
+    if (!String(update.system_name || "").trim()) return res.status(400).json({ status: "error", message: "El nombre del sistema es obligatorio" });
+    if (update.support_email && !/^\S+@\S+\.\S+$/.test(String(update.support_email))) return res.status(400).json({ status: "error", message: "El correo de soporte no es válido" });
+    if (update.maintenance_mode && !String(update.maintenance_message || "").trim()) return res.status(400).json({ status: "error", message: "Escribe un mensaje de mantenimiento" });
+    update.updated_by = req.userId;
+    const settings = await SystemSetting.findOneAndUpdate(
+      { key: "general" }, { $set: update, $setOnInsert: { key: "general" } }, { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
+    );
+    return res.json({ status: "success", message: "Parámetros generales actualizados", settings });
+  } catch (error) {
+    return res.status(400).json({ status: "error", message: error?.message || "No fue posible actualizar los parámetros" });
+  }
+});
+
+app.get("/api/notification-settings", authenticate, async (_req, res) => {
+  try {
+    const settings = await getGlobalNotificationSettings();
+    return res.json({ status: "success", settings });
+  } catch {
+    return res.status(500).json({ status: "error", message: "No fue posible consultar la configuración de notificaciones" });
+  }
+});
+
+app.put("/api/notification-settings", authenticate, notificationManager, async (req, res) => {
+  try {
+    const update = {};
+    for (const field of notificationPreferenceFields) {
+      if (typeof req.body?.events?.[field] === "boolean") update[`events.${field}`] = req.body.events[field];
+    }
+    if (typeof req.body.allow_user_preferences === "boolean") update.allow_user_preferences = req.body.allow_user_preferences;
+    const pollingSeconds = Number(req.body.polling_seconds);
+    const retentionDays = Number(req.body.retention_days);
+    if (!Number.isInteger(pollingSeconds) || pollingSeconds < 15 || pollingSeconds > 300) {
+      return res.status(400).json({ status: "error", message: "El intervalo debe estar entre 15 y 300 segundos" });
+    }
+    if (!Number.isInteger(retentionDays) || retentionDays < 7 || retentionDays > 730) {
+      return res.status(400).json({ status: "error", message: "La retención debe estar entre 7 y 730 días" });
+    }
+    update.polling_seconds = pollingSeconds;
+    update.retention_days = retentionDays;
+    update.updated_by = req.userId;
+    const settings = await NotificationSetting.findOneAndUpdate(
+      { key: "global" }, { $set: update, $setOnInsert: { key: "global" } }, { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
+    );
+    return res.json({ status: "success", message: "Configuración global actualizada", settings });
+  } catch (error) {
+    return res.status(400).json({ status: "error", message: "No fue posible actualizar la configuración" });
+  }
+});
+
 app.get("/api/notification-preferences", authenticate, async (req, res) => {
   try {
     const preferences = await getNotificationPreferences(req.userId);
@@ -2383,6 +2622,10 @@ app.get("/api/notification-preferences", authenticate, async (req, res) => {
 
 app.put("/api/notification-preferences", authenticate, async (req, res) => {
   try {
+    const globalSettings = await getGlobalNotificationSettings();
+    if (!globalSettings.allow_user_preferences) {
+      return res.status(403).json({ status: "error", message: "La personalización de notificaciones está deshabilitada por el administrador" });
+    }
     const update = Object.fromEntries(notificationPreferenceFields.filter((field) => typeof req.body[field] === "boolean").map((field) => [field, req.body[field]]));
     const preferences = await NotificationPreference.findOneAndUpdate({ user_id: req.userId }, { $set: update, $setOnInsert: { user_id: req.userId } }, { new: true, upsert: true, setDefaultsOnInsert: true });
     return res.json({ status: "success", message: "Preferencias de notificación actualizadas", preferences });
@@ -2419,9 +2662,17 @@ const generateSlaNotificationsForUser = async (userId, preferences) => {
 app.get("/api/notifications", authenticate, async (req, res) => {
   try {
     const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 50);
-    const preferences = await getNotificationPreferences(req.userId);
-    await generateSlaNotificationsForUser(req.userId, preferences.toObject());
-    const enabledTypes = notificationPreferenceFields.filter((field) => preferences[field] !== false);
+    const [preferences, globalSettings] = await Promise.all([
+      getNotificationPreferences(req.userId),
+      getGlobalNotificationSettings(),
+    ]);
+    await cleanExpiredNotifications(globalSettings.retention_days);
+    const effectivePreferences = Object.fromEntries(notificationPreferenceFields.map((field) => [
+      field,
+      globalSettings.events?.[field] !== false && (!globalSettings.allow_user_preferences || preferences[field] !== false),
+    ]));
+    await generateSlaNotificationsForUser(req.userId, effectivePreferences);
+    const enabledTypes = notificationPreferenceFields.filter((field) => effectivePreferences[field]);
     const [notifications, unreadCount] = await Promise.all([
       Notificacion.find({ recipient: req.userId, type: { $in: enabledTypes } })
         .sort({ createdAt: -1 })
@@ -2429,7 +2680,13 @@ app.get("/api/notifications", authenticate, async (req, res) => {
         .lean(),
       Notificacion.countDocuments({ recipient: req.userId, type: { $in: enabledTypes }, read_at: null }),
     ]);
-    res.json({ status: "success", notifications, unreadCount });
+    res.json({
+      status: "success", notifications, unreadCount,
+      notificationSettings: {
+        polling_seconds: globalSettings.polling_seconds,
+        allow_user_preferences: globalSettings.allow_user_preferences,
+      },
+    });
   } catch (error) {
     res.status(500).json({ status: "error", message: "No fue posible obtener las notificaciones" });
   }

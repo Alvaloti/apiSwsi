@@ -22,3 +22,5 @@ dist/
 !model/Catalogo.js
 !model/SlaPolicy.js
 !model/NotificationPreference.js
+!model/NotificationSetting.js
+!model/SystemSetting.js

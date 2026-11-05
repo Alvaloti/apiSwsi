@@ -17,6 +17,12 @@ const categorySchema = new mongoose.Schema({
         type:String,
         required:true
     },
+    applies_to: {
+        type: String,
+        enum: ["ambos", "solicitud", "ticket"],
+        default: "ambos",
+        required: true,
+    },
     active:{
         type:Boolean,
         default:true

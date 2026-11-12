@@ -4,6 +4,7 @@ node_modules/
 .env
 .env.*
 !.env.example
+!README.md
 
 # Logs, coverage and generated output
 *.log

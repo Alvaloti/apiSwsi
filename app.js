@@ -55,15 +55,6 @@ const allowedOrigins = (
   .split(",")
   .map(origin => origin.trim());
 
-//conectar con MongoDB
-mongoose
-  .connect(MONGO_URI, {
-    //useNewUrlParser: true,
-    //useUnifiedTopology: true,
-  })
-  .then(() => console.log("✅ Conectado a MongoDB"))
-  .catch((error) => console.error("❌ Error al conectar a MongoDB:", error));
-
 app.use(
   cors({
     origin(origin, callback) {
@@ -282,6 +273,87 @@ const isValidUsername = (value) => {
 
 const normalizeEmail = (value) => String(value || "").trim().toLowerCase();
 const isStrongPassword = (value) => PASSWORD_PATTERN.test(String(value || ""));
+
+const bootstrapInitialAdmin = async () => {
+  if (String(process.env.BOOTSTRAP_ADMIN_ENABLED || "").toLowerCase() !== "true") return;
+
+  const adminRoleIds = await Role.find({ permissions: "system.manage", active: { $ne: false } }).distinct("_id");
+  if (adminRoleIds.length && await User.exists({ rolId: { $in: adminRoleIds }, active: { $ne: false } })) {
+    console.log("Administrador inicial: ya existe una cuenta administrativa activa");
+    return;
+  }
+
+  const config = {
+    username: String(process.env.BOOTSTRAP_ADMIN_USERNAME || "").trim().toLowerCase(),
+    nomina: Number(process.env.BOOTSTRAP_ADMIN_NOMINA),
+    email: normalizeEmail(process.env.BOOTSTRAP_ADMIN_EMAIL),
+    password: String(process.env.BOOTSTRAP_ADMIN_PASSWORD || ""),
+    name: String(process.env.BOOTSTRAP_ADMIN_NAME || "").trim(),
+    last_name: String(process.env.BOOTSTRAP_ADMIN_LAST_NAME || "").trim(),
+    area: String(process.env.BOOTSTRAP_ADMIN_AREA || "Administración").trim(),
+  };
+  const missing = Object.entries(config)
+    .filter(([key, value]) => key !== "nomina" ? !value : !Number.isSafeInteger(value) || value <= 0)
+    .map(([key]) => key);
+  if (missing.length) {
+    throw new Error(`Faltan variables válidas del administrador inicial: ${missing.join(", ")}`);
+  }
+  if (!USERNAME_PATTERN.test(config.username)) {
+    throw new Error("BOOTSTRAP_ADMIN_USERNAME debe usar el formato nombre.apellido");
+  }
+  if (!/^\S+@\S+\.\S+$/.test(config.email)) {
+    throw new Error("BOOTSTRAP_ADMIN_EMAIL no contiene un correo válido");
+  }
+  if (!isStrongPassword(config.password)) {
+    throw new Error("BOOTSTRAP_ADMIN_PASSWORD debe incluir mayúscula, minúscula, número y carácter especial, con al menos 8 caracteres");
+  }
+
+  const duplicate = await User.findOne({
+    $or: [{ username: config.username }, { email: config.email }, { nomina: config.nomina }],
+  }).lean();
+  if (duplicate) {
+    throw new Error("No se creó el administrador inicial porque su usuario, correo o nómina ya pertenece a otra cuenta");
+  }
+
+  let adminRole = await Role.findOne({ name: { $regex: /^admin$/i } });
+  if (!adminRole) {
+    adminRole = await Role.create({
+      name: "admin",
+      description: "Administrador general del sistema",
+      active: true,
+      permissions: ALL_PERMISSION_KEYS,
+      permissions_version: 1,
+    });
+  } else {
+    adminRole.active = true;
+    adminRole.permissions = ALL_PERMISSION_KEYS;
+    adminRole.permissions_version = 1;
+    await adminRole.save();
+  }
+
+  const escapedArea = config.area.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  let adminArea = await Area.findOne({ name: { $regex: new RegExp(`^${escapedArea}$`, "i") } });
+  if (!adminArea) {
+    adminArea = await Area.create({
+      name: config.area,
+      description: "Área administrativa inicial del sistema",
+      active: true,
+    });
+  }
+
+  await User.create({
+    username: config.username,
+    nomina: config.nomina,
+    email: config.email,
+    password: await bcrypt.hash(config.password, 10),
+    name: config.name,
+    last_name: config.last_name,
+    rolId: adminRole._id,
+    area: adminArea._id,
+    active: true,
+  });
+  console.log(`Administrador inicial creado: ${config.email}`);
+};
 const getSystemSettings = () => SystemSetting.findOneAndUpdate(
   { key: "general" }, { $setOnInsert: { key: "general" } }, { new: true, upsert: true, setDefaultsOnInsert: true },
 );
@@ -2773,6 +2845,18 @@ app.post("/api/logout", (req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Servidor corriendo en el puerto ${PORT}`);
-});
+const startServer = async () => {
+  try {
+    await mongoose.connect(MONGO_URI);
+    console.log("✅ Conectado a MongoDB");
+    await ensureDefaultCatalogs();
+    await ensureRolePermissions();
+    await bootstrapInitialAdmin();
+    app.listen(PORT, () => console.log(`Servidor corriendo en el puerto ${PORT}`));
+  } catch (error) {
+    console.error("❌ No fue posible iniciar la API:", error?.message || error);
+    process.exit(1);
+  }
+};
+
+startServer();

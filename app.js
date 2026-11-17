@@ -253,10 +253,10 @@ const buildSlaDates = async (priority, start = new Date()) => {
 };
 const notificationPreferenceFields = ["assignment", "status", "decision", "solution", "escalation", "closure", "sla_warning", "sla_breach"];
 const getNotificationPreferences = async (userId) => NotificationPreference.findOneAndUpdate(
-  { user_id: userId }, { $setOnInsert: { user_id: userId } }, { new: true, upsert: true, setDefaultsOnInsert: true },
+  { user_id: userId }, { $setOnInsert: { user_id: userId } }, { returnDocument: "after", upsert: true, setDefaultsOnInsert: true },
 );
 const getGlobalNotificationSettings = () => NotificationSetting.findOneAndUpdate(
-  { key: "global" }, { $setOnInsert: { key: "global" } }, { new: true, upsert: true, setDefaultsOnInsert: true },
+  { key: "global" }, { $setOnInsert: { key: "global" } }, { returnDocument: "after", upsert: true, setDefaultsOnInsert: true },
 );
 let lastNotificationCleanup = 0;
 const cleanExpiredNotifications = async (retentionDays) => {
@@ -355,7 +355,7 @@ const bootstrapInitialAdmin = async () => {
   console.log(`Administrador inicial creado: ${config.email}`);
 };
 const getSystemSettings = () => SystemSetting.findOneAndUpdate(
-  { key: "general" }, { $setOnInsert: { key: "general" } }, { new: true, upsert: true, setDefaultsOnInsert: true },
+  { key: "general" }, { $setOnInsert: { key: "general" } }, { returnDocument: "after", upsert: true, setDefaultsOnInsert: true },
 );
 
 const createMailTransport = () => {
@@ -605,7 +605,7 @@ const registerCrudRoutes = (
       }
       if (appliesTo && req.body.estado && !previous?.first_response_at) updatePayload.first_response_at = new Date();
       const updated = await Model.findByIdAndUpdate(getId(req), updatePayload, {
-        new: true,
+        returnDocument: "after",
         runValidators: true,
       });
       if (!updated) return notFound(res, label);
@@ -739,7 +739,7 @@ app.put("/api/catalogs/:id", authenticate, catalogsManager, async (req, res) => 
     if (current.system && current.type === "estado" && (update.active === false || (update.applies_to !== undefined && update.applies_to !== "ambos"))) {
       return res.status(409).json({ status: "error", message: "Los estados base deben permanecer activos para solicitudes y tickets" });
     }
-    const item = await Catalogo.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true });
+    const item = await Catalogo.findByIdAndUpdate(req.params.id, update, { returnDocument: "after", runValidators: true });
     return res.json({ status: "success", message: "Elemento de catálogo actualizado", item });
   } catch (error) {
     return res.status(400).json({ status: "error", message: "No fue posible actualizar el elemento" });
@@ -1137,7 +1137,7 @@ app.put("/api/profile", authenticate, async (req, res) => {
     if (req.body.password) update.password = await bcrypt.hash(req.body.password, 10);
 
     const user = await User.findByIdAndUpdate(req.userId, update, {
-      new: true,
+      returnDocument: "after",
       runValidators: true,
     })
       .select("-password")
@@ -2002,7 +2002,7 @@ app.patch(
           ],
         },
         { $set: update },
-        { new: true, runValidators: true },
+        { returnDocument: "after", runValidators: true },
       )
         .populate("solicitante_id", "username name last_name")
         .populate("supervisor_id", "username name last_name");
@@ -2056,7 +2056,7 @@ app.put("/api/users/:id", authenticate, usersManager, async (req, res) => {
     const update = pick(req.body, fields);
     if (update.username) update.username = normalizeUsername(update.username);
     if (req.body.password) update.password = await bcrypt.hash(req.body.password, 10);
-    const user = await User.findByIdAndUpdate(req.params.id, update, { new: true, runValidators: true })
+    const user = await User.findByIdAndUpdate(req.params.id, update, { returnDocument: "after", runValidators: true })
       .select("-password");
     if (!user) return notFound(res, "Usuario");
     res.json({ status: "success", message: "Usuario actualizado correctamente", user });
@@ -2357,7 +2357,7 @@ app.put("/api/assignments/:id", authenticate, inventoryManager, async (req, res)
     const assignment = await Asignacion.findByIdAndUpdate(
       req.params.id,
       pick(req.body, ["notes", "return_notes"]),
-      { new: true, runValidators: true },
+      { returnDocument: "after", runValidators: true },
     );
     if (!assignment) return notFound(res, "Asignación");
     res.json({
@@ -2611,7 +2611,7 @@ app.put("/api/sla-policies/:priority", authenticate, slaManager, async (req, res
     const policy = await SlaPolicy.findOneAndUpdate(
       { priority },
       { response_hours: responseHours, resolution_hours: resolutionHours, warning_percent: warningPercent, active: req.body.active !== false },
-      { new: true, upsert: true, runValidators: true },
+      { returnDocument: "after", upsert: true, runValidators: true },
     );
     return res.json({ status: "success", message: "Política SLA actualizada", policy });
   } catch {
@@ -2639,7 +2639,7 @@ app.put("/api/system-settings", authenticate, settingsManager, async (req, res) 
     if (update.maintenance_mode && !String(update.maintenance_message || "").trim()) return res.status(400).json({ status: "error", message: "Escribe un mensaje de mantenimiento" });
     update.updated_by = req.userId;
     const settings = await SystemSetting.findOneAndUpdate(
-      { key: "general" }, { $set: update, $setOnInsert: { key: "general" } }, { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
+      { key: "general" }, { $set: update, $setOnInsert: { key: "general" } }, { returnDocument: "after", upsert: true, runValidators: true, setDefaultsOnInsert: true },
     );
     return res.json({ status: "success", message: "Parámetros generales actualizados", settings });
   } catch (error) {
@@ -2675,7 +2675,7 @@ app.put("/api/notification-settings", authenticate, notificationManager, async (
     update.retention_days = retentionDays;
     update.updated_by = req.userId;
     const settings = await NotificationSetting.findOneAndUpdate(
-      { key: "global" }, { $set: update, $setOnInsert: { key: "global" } }, { new: true, upsert: true, runValidators: true, setDefaultsOnInsert: true },
+      { key: "global" }, { $set: update, $setOnInsert: { key: "global" } }, { returnDocument: "after", upsert: true, runValidators: true, setDefaultsOnInsert: true },
     );
     return res.json({ status: "success", message: "Configuración global actualizada", settings });
   } catch (error) {
@@ -2699,7 +2699,7 @@ app.put("/api/notification-preferences", authenticate, async (req, res) => {
       return res.status(403).json({ status: "error", message: "La personalización de notificaciones está deshabilitada por el administrador" });
     }
     const update = Object.fromEntries(notificationPreferenceFields.filter((field) => typeof req.body[field] === "boolean").map((field) => [field, req.body[field]]));
-    const preferences = await NotificationPreference.findOneAndUpdate({ user_id: req.userId }, { $set: update, $setOnInsert: { user_id: req.userId } }, { new: true, upsert: true, setDefaultsOnInsert: true });
+    const preferences = await NotificationPreference.findOneAndUpdate({ user_id: req.userId }, { $set: update, $setOnInsert: { user_id: req.userId } }, { returnDocument: "after", upsert: true, setDefaultsOnInsert: true });
     return res.json({ status: "success", message: "Preferencias de notificación actualizadas", preferences });
   } catch {
     return res.status(400).json({ status: "error", message: "No fue posible actualizar las preferencias" });
@@ -2782,7 +2782,7 @@ app.patch("/api/notifications/:id/read", authenticate, async (req, res) => {
     const notification = await Notificacion.findOneAndUpdate(
       { _id: req.params.id, recipient: req.userId },
       { $set: { read_at: new Date() } },
-      { new: true },
+      { returnDocument: "after" },
     );
     if (!notification) return notFound(res, "Notificación");
     res.json({ status: "success", notification });

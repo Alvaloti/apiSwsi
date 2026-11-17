@@ -43,7 +43,7 @@ export default function autoIncrement(schema, { field = "id", counterName }) {
           },
         },
       ],
-      { new: true, upsert: true, updatePipeline: true },
+      { returnDocument: "after", upsert: true, updatePipeline: true },
     );
 
     this[field] = counter.sequence;

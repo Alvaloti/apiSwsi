@@ -1423,7 +1423,6 @@ app.get("/api/getItems", authenticate, inventoryManager, async (req, res) => {
 });
 
 app.post("/api/createItem", authenticate, inventoryManager, async (req, res) => {
-  console.log("Datos para crear el item: ", req.body);
   try {
     const { type, brand, model, serial_number, status, assigned_to, asigned_to } = req.body;
     const assignedTo = assigned_to || asigned_to;
@@ -1433,7 +1432,7 @@ app.post("/api/createItem", authenticate, inventoryManager, async (req, res) => 
         message: "Los campos son obligatorios",
       });
     }
-    const existingItem = await Inventario.findOne({ serial_number });
+    const existingItem = await Inventario.findOne({ serial_number }).maxTimeMS(10000);
     if (existingItem) {
       return res
         .status(400)
@@ -1447,15 +1446,20 @@ app.post("/api/createItem", authenticate, inventoryManager, async (req, res) => 
       status,
       assigned_to: assignedTo || null,
     });
-    console.log("Item registrado: ", newItem);
     res
       .status(201)
-      .json({ status: "success", message: "Dispositivo registrado exitosamente" });
+      .json({ status: "success", message: "Dispositivo registrado exitosamente", item: newItem });
   } catch (error) {
-    console.error("Error al registrar el dispoditivo: ", error);
+    console.error("Error al registrar el dispositivo:", error);
+    const duplicate = error?.code === 11000;
     res
-      .status(500)
-      .json({ status: "error", message: "Error al registrar el dispositivo" });
+      .status(duplicate ? 409 : 500)
+      .json({
+        status: "error",
+        message: duplicate
+          ? "Ya existe un equipo con el mismo número de serie o consecutivo"
+          : "Error al registrar el dispositivo",
+      });
   }
 });
 
